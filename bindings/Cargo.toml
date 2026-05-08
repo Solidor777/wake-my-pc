@@ -1,0 +1,27 @@
+# bindings: uniffi UDL + glue exposing core to Swift (iOS) and Kotlin (Android).
+# Single source of truth for both mobile platforms (locked decision).
+#
+# `#![forbid(unsafe_code)]` at lib.rs — uniffi generates its own FFI shims;
+# we never write raw FFI here (Principle 2).
+
+[package]
+name         = "wake-my-pc-bindings"
+version      .workspace = true
+edition      .workspace = true
+rust-version .workspace = true
+license      .workspace = true
+repository   .workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib", "lib"]
+name       = "wake_my_pc_bindings"
+
+[dependencies]
+wake-my-pc-core = { path = "../core" }
+uniffi = { version = "0.28", features = ["cli"] }
+
+[build-dependencies]
+uniffi = { version = "0.28", features = ["build"] }

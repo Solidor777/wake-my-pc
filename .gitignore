@@ -1,0 +1,50 @@
+# Personal Claude Code settings — may contain identifying paths or per-machine permission state
+.claude/settings.local.json
+
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Node / JS toolchains (likely needed once mobile shells exist)
+node_modules/
+dist/
+build/
+.next/
+.cache/
+
+# Mobile build outputs
+# Android
+*.apk
+*.aab
+*.keystore
+*.jks
+local.properties
+.gradle/
+# iOS / Xcode
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+DerivedData/
+Pods/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Editor / OS junk
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Secrets / pairing material — never commit. Principle 1.
+*.pem
+*.key
+*.p12
+*.mobileprovision
+.env
+.env.*
+!.env.example
+secrets/

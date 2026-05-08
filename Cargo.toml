@@ -1,0 +1,36 @@
+# Workspace root.
+# Crate roles:
+#   core/        — protocol, crypto, state machine. Pure Rust, no I/O. `#![forbid(unsafe_code)]`.
+#   daemon/      — PC-side service. Receives auth'd Sleep commands, advertises state on LAN.
+#   desktop-ui/  — Win/Mac/Linux client UI (egui).
+#   bindings/    — uniffi UDL + glue exposing core to Swift (iOS) and Kotlin (Android).
+#
+# Locked decisions live in docs/PLAN.md → "Locked architectural decisions".
+# Lint posture comes from docs/PRINCIPLES.md Principle 2 (memory & execution safety).
+
+[workspace]
+members = ["core", "daemon", "desktop-ui", "bindings"]
+resolver = "3"
+
+[workspace.package]
+version     = "0.1.0"
+edition     = "2024"
+rust-version = "1.85"
+license     = "MIT OR Apache-2.0"
+repository  = "https://github.com/justintarquin/wake-my-pc"
+
+# Principle 2: memory & execution safety. These lints apply to every crate via
+# `[lints] workspace = true` in each crate's Cargo.toml. Test code is exempt
+# because panicking IS the test failure (handled per-crate via cfg(test)).
+[workspace.lints.clippy]
+unwrap_used        = "deny"
+expect_used        = "deny"
+panic              = "warn"   # startup-time invariant panics may justify, but call them out
+indexing_slicing   = "warn"   # prefer .get() over [i] for untrusted indices
+integer_division   = "warn"   # surfaces silent zero-division paths
+todo               = "warn"
+unimplemented      = "warn"
+
+[workspace.lints.rust]
+unsafe_code        = "warn"   # crate-level `#![forbid(unsafe_code)]` upgrades to forbid in core/bindings
+missing_debug_implementations = "warn"

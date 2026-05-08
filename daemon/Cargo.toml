@@ -1,0 +1,26 @@
+# daemon: PC-side service. Listens on LAN (TCP+TLS 1.3 mTLS, locked decision),
+# accepts authenticated Sleep commands, calls OS sleep API, advertises state.
+#
+# `unsafe` is permitted here only with `// SAFETY:` comments — typically for
+# Win32 / IOKit / DBus FFI. Every block must be reviewed (Principle 2).
+#
+# Eventual deps (added per milestone):
+#   M2: tokio, rustls, mdns-sd, plus per-OS sleep crates (windows-sys, etc.).
+
+[package]
+name         = "wake-my-pc-daemon"
+version      .workspace = true
+edition      .workspace = true
+rust-version .workspace = true
+license      .workspace = true
+repository   .workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+wake-my-pc-core = { path = "../core" }
+
+[[bin]]
+name = "wake-my-pc-daemon"
+path = "src/main.rs"
