@@ -14,6 +14,9 @@ For canonical decisions see `PRINCIPLES.md` and `PLAN.md` — entries here just 
 ### CI workflows unverified until first push
 `per-pr.yml` and `pre-release.yml` are syntactically reasonable but neither has run against GitHub Actions. iOS/Android jobs in `pre-release.yml` will fail until mobile scaffolds exist — intentional. First push reveals any YAML mistakes. **Status: open.**
 
+### Unmaintained transitive deps from postcard + uniffi
+`cargo audit` reports three unmaintained-warnings (no vulnerabilities; exit 0): `atomic-polyfill 1.0.3` via heapless via postcard, `bincode 1.3.3` via uniffi_macros, `paste 1.0.15` via uniffi. Tracked in `TODO.md` as a watch item — bump becomes blocking only if any flips to a vulnerability advisory. M1 uses `cargo audit` (default) which fails on vulnerabilities only; `--deny warnings` is intentionally NOT used per Principle 1 supply-chain note (block on advisories that are real, not on maintainer-life-event noise). **Status: open.**
+
 ---
 
 ## Accepted (load-bearing — future agents should not "fix" these)
@@ -41,6 +44,24 @@ Sleep/Lock/PowerOff are revoked cleanly by uninstall (daemon + keystore gone). W
 
 ### resolver = "3" pinned at workspace level
 Required for edition 2024 (introduced Cargo 1.84). **Status: accepted.**
+
+### M1 stack refinement: ed25519-dalek dropped, rcgen-via-ring is sufficient
+Locked decision (2026-05-08, M1 kickoff): "rustls + ed25519-dalek + rcgen". Implementation refinement during M1: rcgen with the `ring` provider already manages Ed25519 keypair generation + PKCS#8 serialization end-to-end, so a direct `ed25519-dalek` dep is duplicate machinery. The Ed25519 algorithm is unchanged; only the crate that exposes it shifted. Drop is documented inline in `core/Cargo.toml`. **Status: accepted.**
+
+### M1: TLS resumption disabled by configuration
+PROTOCOL.md §5 specifies fresh handshake per session; rustls config disables session tickets, server session storage, and 0-RTT (`max_early_data_size = 0`). One extra handshake per reconnect is acceptable on a one-button-LAN-app, and the tradeoff buys clean per-session nonce reset and removes a class of cross-session replay risk. **Status: accepted.**
+
+### M1: 6-digit fallback requires SPKI hash entry alongside the code
+PROTOCOL.md §8 codifies that the 6-digit pairing code is a one-time PIN, NOT a hash commitment. Without the SPKI hash typed in alongside the code, an active LAN MITM at pairing time could substitute their own cert. The home-LAN threat model accepts this (pairing is a deliberate one-shot in a known location); QR path is the strong default; users on headless installs are the rare case. Future agents should not "fix" this by treating the 6-digit as a SAS commitment without bumping the protocol version. **Status: accepted.**
+
+### M1: SPKI pinset is Arc-immutable; pairing changes rebuild rustls config
+`PinSet` is shared via `Arc` and immutable per TLS-config build. To hot-add a pairing the daemon (M2) must rebuild its `ServerConfig` and either restart the listener or use rustls's `Acceptor`-with-config-callback path. The pairing path is rare enough that a config rebuild is cheap; the alternative (interior mutability across an Arc-shared verifier) is harder to reason about. **Status: accepted.**
+
+### M1: MSRV bumped 1.85 → 1.88 for time-crate advisory
+RUSTSEC-2026-0009 (medium-severity DoS via stack exhaustion in `time`) has its fix in `time 0.3.47`, which requires Rust 1.88. Workspace MSRV bumped to 1.88; CI uses `dtolnay/rust-toolchain@stable` so no infra impact. Principle 1's supply-chain gate trumps an MSRV preference; future advisory-driven bumps follow the same rule. Documented inline in workspace `Cargo.toml`. **Status: accepted.**
+
+### M1: PROTOCOL.md not embedded as crate doc via `include_str!`
+Initial M1 attempt added `#![doc = include_str!("../../docs/PROTOCOL.md")]` to `core/src/lib.rs` so rustdoc would render the spec. rustdoc tries to compile fenced code blocks as doctests, and the spec contains illustrative-not-compilable Rust (`struct QrPayload { lan_hint: SocketAddrV4, ... }` with no imports) plus EBNF-style schema (`frame := len:u32 || ...`) — both fail the doctest pass. Pulled. The spec lives at `docs/PROTOCOL.md`; module-level docs link to it by file path, which is sufficient for the agent-cold-read use case. **Status: resolved.**
 
 ---
 

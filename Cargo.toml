@@ -15,7 +15,12 @@ resolver = "3"
 [workspace.package]
 version     = "0.1.0"
 edition     = "2024"
-rust-version = "1.85"
+# MSRV bumped 1.85 → 1.88 (M1, 2026-05-08): RUSTSEC-2026-0009 fix for the
+# `time` crate ships in 0.3.47, which requires Rust 1.88. Principle 1's
+# supply-chain gate means we follow the advisory rather than pin to an
+# unpatched version. CI uses `dtolnay/rust-toolchain@stable`, so no infra
+# change required.
+rust-version = "1.88"
 license     = "MIT OR Apache-2.0"
 repository  = "https://github.com/justintarquin/wake-my-pc"
 

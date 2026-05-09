@@ -1,9 +1,15 @@
 # core: protocol + crypto + state machine. Pure Rust, no I/O, no platform deps.
-# Hardened: `#![forbid(unsafe_code)]` at lib.rs (Principle 2).
+# `#![forbid(unsafe_code)]` at lib.rs (Principle 2).
 #
-# Eventual deps (added per milestone):
-#   M1: rustls (TLS 1.3), ed25519-dalek (device certs), x509-cert (cert gen).
-#   M3: nothing new — WoL packet construction is a few bytes, no crypto.
+# Locked architectural choices for M1 (PLAN.md → "Locked architectural decisions"):
+#   - Wire encoding: postcard. Compact, deterministic, serde-based, fuzzable.
+#   - TLS: rustls 0.23 with the `ring` crypto provider. No aws-lc-rs (overkill
+#     for owner-only-LAN threat model; heavier C build).
+#   - Device certs: ed25519-dalek for keypair, rcgen for self-signed X.509 wrapper.
+#   - Auth: SPKI pinning via custom rustls verifier (NOT CA chain validation).
+#
+# Deps deliberately pinned to caret-major; lockfile is committed for reproducible
+# builds across the desktop matrix.
 
 [package]
 name         = "wake-my-pc-core"
@@ -17,7 +23,32 @@ repository   .workspace = true
 workspace = true
 
 [dependencies]
-# (none yet — M0 stub)
+# Wire encoding (PROTOCOL.md §4).
+serde     = { version = "1", features = ["derive"] }
+postcard  = { version = "1.1", features = ["alloc"] }
+
+# Crypto surface (PROTOCOL.md §6, §8).
+#
+# Locked decision was "rustls + ed25519-dalek + rcgen". Implementation
+# refinement (2026-05-08): `rcgen` (with the `ring` provider) already manages
+# Ed25519 keypair generation and PKCS#8 serialization end-to-end, so a direct
+# `ed25519-dalek` dep would be duplicate machinery. Ed25519-the-algorithm is
+# unchanged; only the crate that exposes it shifted. Documented in
+# POST_WORK_FINDINGS as a refinement, not a re-decision.
+rustls           = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+# `tls12` feature is on so the disabled-1.2 path compiles; we still pin TLS 1.3
+# at config time in `crypto::tls`. Removing the feature entirely is a future
+# cleanup once rustls's feature flags stabilize.
+rustls-pki-types = "1"
+rcgen            = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+x509-parser      = { version = "0.16", default-features = false }
+sha2             = { version = "0.10", default-features = false }
+getrandom        = "0.2"
+
+# Errors.
+thiserror = "2"
 
 [dev-dependencies]
-# (none yet — KAT vectors come in M1)
+# KAT (§10) + property tests (M1 exit criterion).
+proptest = "1"
+hex      = "0.4"

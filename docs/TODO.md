@@ -31,4 +31,10 @@ Accepted tradeoffs from locked decisions. Each must surface clearly in v1 onboar
 
 ## Routine follow-ups
 
-_(none — this section is for the rare exception that can't be fixed inline per CLAUDE.md rule 7.)_
+### Unmaintained transitive deps (M1, 2026-05-08)
+`cargo audit` reports three unmaintained-but-not-vulnerable warnings:
+- `atomic-polyfill 1.0.3` (RUSTSEC-2023-0089) via `heapless` via `postcard 1.1`. Resolved if/when postcard bumps to a heapless past 0.7.
+- `bincode 1.3.3` (RUSTSEC-2025-0141) via `uniffi_macros 0.28`. Resolved if/when uniffi bumps to bincode 2.x.
+- `paste 1.0.15` (RUSTSEC-2024-0436) via `uniffi_core` + `uniffi_bindgen 0.28`. Same: gated on uniffi.
+
+**Why deferred:** none are vulnerabilities (audit exits 0); upgrading would mean swapping postcard or uniffi outright, which is a much larger blast radius than the risk warrants. Watch list — re-check at M5 (beta hardening) and any time a new advisory lands against any of these crates.
