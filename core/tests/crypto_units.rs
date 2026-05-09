@@ -14,9 +14,9 @@ use rustls::client::danger::ServerCertVerifier;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::server::danger::ClientCertVerifier;
 use wake_my_pc_core::crypto::{
-    DeviceIdentity, NonceReceiver, NonceSender, PAIRING_WINDOW_DEFAULT_MS, PairingHandshake,
-    PairingRecord, PairingRejection, PairingState, PairingTransition, PinSet, PinnedClientVerifier,
-    PinnedServerVerifier, SpkiHash, compute_spki_hash, extract_spki_hash,
+    DeviceIdentity, MAX_PAIRING_ATTEMPTS, NonceReceiver, NonceSender, PAIRING_WINDOW_DEFAULT_MS,
+    PairingHandshake, PairingRecord, PairingRejection, PairingState, PairingTransition, PinSet,
+    PinnedClientVerifier, PinnedServerVerifier, SpkiHash, compute_spki_hash, extract_spki_hash,
 };
 
 fn provider() -> Arc<rustls::crypto::CryptoProvider> {
@@ -304,6 +304,105 @@ fn pairing_pair_after_expiry_rejected() {
         }
     ));
     assert!(matches!(h.state(), PairingState::Idle));
+}
+
+#[test]
+fn pairing_too_many_wrong_codes_locks_window() {
+    let mut h = PairingHandshake::new();
+    let started = h.start(0, PAIRING_WINDOW_DEFAULT_MS).unwrap();
+    let code = match started {
+        PairingTransition::Started { code } => code,
+        _ => panic!(),
+    };
+    let bad = (code + 1) % 1_000_000;
+
+    // First MAX-1 wrong attempts: window stays open.
+    for i in 0..(MAX_PAIRING_ATTEMPTS - 1) {
+        let result = h.accept_pair(100, bad, "Phone".into(), SpkiHash([0; 32]));
+        assert!(
+            matches!(
+                result,
+                PairingTransition::Rejected {
+                    reason: PairingRejection::WrongCode
+                }
+            ),
+            "attempt {i} unexpected: {result:?}"
+        );
+        assert!(matches!(h.state(), PairingState::Awaiting { .. }));
+    }
+    // Final attempt trips the bound.
+    let result = h.accept_pair(100, bad, "Phone".into(), SpkiHash([0; 32]));
+    assert!(
+        matches!(
+            result,
+            PairingTransition::Rejected {
+                reason: PairingRejection::TooManyAttempts
+            }
+        ),
+        "got {result:?}"
+    );
+    assert!(matches!(h.state(), PairingState::Idle));
+}
+
+#[test]
+fn pairing_correct_code_after_some_failures_still_succeeds() {
+    let mut h = PairingHandshake::new();
+    let started = h.start(0, PAIRING_WINDOW_DEFAULT_MS).unwrap();
+    let code = match started {
+        PairingTransition::Started { code } => code,
+        _ => panic!(),
+    };
+    let bad = (code + 1) % 1_000_000;
+
+    // Burn 2 of MAX_PAIRING_ATTEMPTS failures (must stay below the cap).
+    const { assert!(MAX_PAIRING_ATTEMPTS > 2) };
+    for _ in 0..2 {
+        h.accept_pair(50, bad, "Phone".into(), SpkiHash([0; 32]));
+    }
+    let ok = h.accept_pair(100, code, "Phone".into(), SpkiHash([0xAB; 32]));
+    assert!(matches!(ok, PairingTransition::Succeeded { .. }));
+}
+
+#[test]
+fn pairing_out_of_range_code_rejected_and_counted() {
+    let mut h = PairingHandshake::new();
+    h.start(0, PAIRING_WINDOW_DEFAULT_MS).unwrap();
+
+    // Any value >= 1_000_000 is out of range; counts against budget.
+    let result = h.accept_pair(50, 1_000_000, "Phone".into(), SpkiHash([0; 32]));
+    assert!(
+        matches!(
+            result,
+            PairingTransition::Rejected {
+                reason: PairingRejection::OutOfRange
+            }
+        ),
+        "got {result:?}"
+    );
+    // Window stays open after one out-of-range attempt.
+    assert!(matches!(h.state(), PairingState::Awaiting { .. }));
+
+    // Hammer until lockout (we already burned 1).
+    for _ in 1..MAX_PAIRING_ATTEMPTS {
+        h.accept_pair(50, u32::MAX, "Phone".into(), SpkiHash([0; 32]));
+    }
+    assert!(matches!(h.state(), PairingState::Idle));
+}
+
+#[test]
+fn pairing_codes_are_in_valid_range() {
+    // Generate many to confirm the rejection-sample path always yields
+    // values in 0..1_000_000. (Fast — start() is pure CPU + getrandom.)
+    for _ in 0..1024 {
+        let mut h = PairingHandshake::new();
+        let started = h.start(0, PAIRING_WINDOW_DEFAULT_MS).unwrap();
+        match started {
+            PairingTransition::Started { code } => {
+                assert!(code < 1_000_000, "got out-of-range code {code}");
+            }
+            other => panic!("expected Started, got {other:?}"),
+        }
+    }
 }
 
 #[test]

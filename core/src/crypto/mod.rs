@@ -15,8 +15,8 @@ mod tls;
 pub use device::{DeviceIdentity, DeviceIdentityBytes};
 pub use nonce::{NonceCounter, NonceError, NonceReceiver, NonceSender};
 pub use pairing::{
-    PAIRING_WINDOW_DEFAULT_MS, PairingHandshake, PairingRecord, PairingRejection, PairingState,
-    PairingTransition,
+    MAX_PAIRING_ATTEMPTS, PAIRING_WINDOW_DEFAULT_MS, PairingHandshake, PairingRecord,
+    PairingRejection, PairingState, PairingTransition,
 };
 pub use pin::{PinSet, PinnedClientVerifier, PinnedServerVerifier};
 pub use spki::{compute_spki_hash, extract_spki_hash};

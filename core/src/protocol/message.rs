@@ -88,12 +88,14 @@ pub enum ClientFrame {
     /// First-contact pairing message. Sent only inside the daemon's pairing
     /// window (PROTOCOL.md §8). `phone_name` is the user-visible label
     /// shown in `daemon-cli list-paired`; capped to 64 bytes by the daemon
-    /// at intake to bound storage. `pairing_code` matches the 6-digit code
-    /// the daemon advertised (interpreted as `code = pairing_code % 1_000_000`).
+    /// at intake to bound storage. `pairing_code` is the canonical 6-digit
+    /// value (`0..1_000_000`); values outside that range are rejected at
+    /// the state machine and count against the per-window attempt budget
+    /// (`MAX_PAIRING_ATTEMPTS`).
     Pair {
         /// User-visible label for this pairing.
         phone_name: String,
-        /// One-time pairing PIN — daemon-generated, valid one window only.
+        /// One-time pairing PIN, 6-digit (`0..1_000_000`).
         pairing_code: u32,
     },
     /// Request: put PC to sleep.

@@ -148,42 +148,47 @@ Pairing is the only flow that creates new SPKI pins. Out-of-band (QR or 6-digit)
 **State machine** (`core::crypto::pairing`):
 
 ```
-Idle ──advertise()──▶ Awaiting ──client_connects()──▶ Verifying ──ok──▶ Paired
-                          │                              │
-                          └──timeout (5 min)──▶ Idle     └──fail──▶ Idle
+Idle ──advertise()──▶ Awaiting ──Pair{code}──▶ Paired
+                          │ │
+                          │ └─wrong code ×N or out-of-range ×N──▶ Idle
+                          └──timeout (5 min)──▶ Idle
 ```
 
 **QR path** (default):
 
 QR payload (postcard-encoded, base32-rendered):
-```rust
+```text
 struct QrPayload {
     daemon_spki: [u8; 32],     // SHA-256 of daemon SPKI
     lan_hint: SocketAddrV4,    // first-guess address; mDNS still authoritative
-    pairing_code: u32,         // random; daemon-generated; valid only this Awaiting window
+    pairing_code: u32,         // 6-digit (0..1_000_000); valid only this Awaiting window
     phone_name_hint: Option<String>, // optional; daemon may suggest from device name
 }
 ```
 
-1. User runs `wake-my-pc-daemon pair`. Daemon generates fresh `pairing_code`, advertises mDNS (`_wake-my-pc._tcp.local`), prints QR + 6-digit code (= `pairing_code % 1_000_000`, zero-padded) to stdout.
+1. User runs `wake-my-pc-daemon pair`. Daemon generates fresh 6-digit `pairing_code` (rejection-sampled from `getrandom` to avoid modulo bias), advertises mDNS (`_wake-my-pc._tcp.local`), prints QR + the same 6-digit code (zero-padded) to stdout. The displayed code and the wire `pairing_code` field are the same value — there is no separate "internal" representation.
 2. Phone scans QR → pins `daemon_spki` immediately → connects via TLS to `lan_hint` (or mDNS).
 3. TLS handshake: phone verifies daemon SPKI against pin from QR. Daemon, in `Awaiting` state, accepts any client SPKI for now (it's about to learn one).
 4. Phone sends `ClientFrame::Pair { phone_name, pairing_code }` as the first application frame.
-5. Daemon verifies `pairing_code` matches the in-window value → records `(client_spki, phone_name, paired_at = now, last_authenticated_at = now)` → transitions to `Paired` → returns `DaemonFrame::Ack`.
+5. Daemon verifies `pairing_code` is in range AND matches the in-window value → records `(client_spki, phone_name, paired_at = now, last_authenticated_at = now)` → transitions to `Paired` → returns `DaemonFrame::Ack`.
 6. Daemon disarms pairing window. Subsequent connections from this client are normal-flow auth'd commands.
 
 **6-digit fallback** (headless daemon, no QR display):
 
-The daemon prints only the 6-digit `pairing_code` and the SPKI hash hex. The phone:
+The daemon prints the 6-digit `pairing_code` and the SPKI hash hex. The phone:
 
-1. User picks "Enter manually" on phone, types the 6-digit code AND the SPKI hash (or scans a printable QR rendered from `daemon-cli show-qr` if available).
+1. User picks "Enter manually" on phone, types the 6-digit code AND the SPKI hash.
 2. Phone pins SPKI hash from manual entry, then proceeds as steps 2–6 above.
+
+**Brute-force bound (state-machine-enforced):**
+- Per-window attempt budget: `MAX_PAIRING_ATTEMPTS = 5`. Wrong-code rejections (and out-of-range codes — values `>= 1_000_000`) increment the counter; hitting the cap forces the state machine to `Idle` and the user must re-run `daemon-cli pair`.
+- 5 guesses against a 10⁶ search space ⇒ ≤ 5×10⁻⁶ success per window, regardless of how fast the attacker can probe within the 5-minute TTL. Caller (M2 daemon) does not need to add additional rate limiting; defaults are sound out of the box.
 
 **Cryptographic strength:**
 - QR path: pin is the full 256-bit SHA-256. MITM at pairing time would need to forge the QR display — physical-access threat, out of scope.
 - 6-digit fallback alone (without SPKI hash entry): not supported. The 6-digit code is a one-time pairing PIN, NOT a hash commitment. Without the SPKI hash typed in, an active LAN MITM could substitute their own cert. v1 requires the SPKI alongside the 6-digit code in the headless path. The home-LAN threat model accepts this — most users use the QR path.
 
-The pairing window expires after 5 minutes or one accepted `Pair` (whichever first). A second phone attempting to pair must trigger a fresh `daemon-cli pair`.
+The pairing window expires after 5 minutes, after `MAX_PAIRING_ATTEMPTS` failures, or one accepted `Pair` (whichever first). A subsequent pairing requires a fresh `daemon-cli pair`.
 
 ---
 
