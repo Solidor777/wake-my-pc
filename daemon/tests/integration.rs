@@ -94,6 +94,82 @@ mod harness {
     }
 }
 
+mod mock_handlers {
+    //! Recording mock for the daemon `Handlers` trait. Each method
+    //! pushes its name into a shared log so tests can assert what the
+    //! dispatch path actually invoked. Per-method canned results are
+    //! configured at construction.
+
+    use std::sync::Mutex;
+
+    use wake_my_pc_core::protocol::PcState;
+    use wake_my_pc_daemon::Handlers;
+    use wake_my_pc_daemon::OsHandlerError;
+
+    pub struct RecordingHandlers {
+        pub log: Mutex<Vec<&'static str>>,
+        pub sleep_result: Mutex<Result<(), OsHandlerError>>,
+        pub lock_result: Mutex<Result<(), OsHandlerError>>,
+        pub power_off_result: Mutex<Result<(), OsHandlerError>>,
+        pub state_result: Mutex<Result<PcState, OsHandlerError>>,
+    }
+
+    impl RecordingHandlers {
+        /// Default mock — every action succeeds; state probe reports
+        /// `OnLoggedIn`. Tests override fields before spawning.
+        pub fn ok() -> Self {
+            Self {
+                log: Mutex::new(Vec::new()),
+                sleep_result: Mutex::new(Ok(())),
+                lock_result: Mutex::new(Ok(())),
+                power_off_result: Mutex::new(Ok(())),
+                state_result: Mutex::new(Ok(PcState::OnLoggedIn)),
+            }
+        }
+
+        pub fn record(&self, label: &'static str) {
+            self.log.lock().unwrap().push(label);
+        }
+
+        pub fn invocations(&self) -> Vec<&'static str> {
+            self.log.lock().unwrap().clone()
+        }
+    }
+
+    impl Handlers for RecordingHandlers {
+        fn prepare(&self) -> Result<(), OsHandlerError> {
+            self.record("prepare");
+            Ok(())
+        }
+
+        fn sleep(&self) -> Result<(), OsHandlerError> {
+            self.record("sleep");
+            // Replace-with-Ok so we don't move the configured Err out.
+            // Tests configure once and observe; after a single call the
+            // result is consumed.
+            std::mem::replace(&mut *self.sleep_result.lock().unwrap(), Ok(()))
+        }
+
+        fn lock(&self) -> Result<(), OsHandlerError> {
+            self.record("lock");
+            std::mem::replace(&mut *self.lock_result.lock().unwrap(), Ok(()))
+        }
+
+        fn power_off(&self) -> Result<(), OsHandlerError> {
+            self.record("power_off");
+            std::mem::replace(&mut *self.power_off_result.lock().unwrap(), Ok(()))
+        }
+
+        fn current_session_state(&self) -> Result<PcState, OsHandlerError> {
+            self.record("current_session_state");
+            std::mem::replace(
+                &mut *self.state_result.lock().unwrap(),
+                Ok(PcState::OnLoggedIn),
+            )
+        }
+    }
+}
+
 /// Run a single-shot client request against the daemon: connect, send
 /// `frame`, read one response envelope, disconnect.
 async fn rpc_one(
@@ -181,6 +257,30 @@ async fn spawn_daemon(
     (addr, handle)
 }
 
+/// Spawn the daemon with an injected handlers mock. Used by the
+/// Sleep / Lock / PowerOff dispatch tests so they don't suspend the
+/// host machine running CI.
+async fn spawn_daemon_with_handlers(
+    data_dir: std::path::PathBuf,
+    handlers: Arc<dyn wake_my_pc_daemon::Handlers>,
+) -> (SocketAddr, tokio::task::JoinHandle<anyhow::Result<()>>) {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    let cfg = wake_my_pc_daemon::Config {
+        data_dir,
+        bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+    };
+    let listener = tokio::net::TcpListener::bind(cfg.bind).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let handle = tokio::spawn(async move {
+        wake_my_pc_daemon::run_server_with_listener_and_handlers(cfg, listener, handlers).await
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    (addr, handle)
+}
+
 #[tokio::test]
 async fn state_probe_returns_5_state() {
     let ks = harness::build_keystore(1).await;
@@ -195,9 +295,16 @@ async fn state_probe_returns_5_state() {
     .await;
     match resp {
         DaemonFrame::StateReport(state) => {
-            // On Windows, expect OnLoggedIn; on stub platforms also OnLoggedIn.
+            // Windows production path can return any of OnLoggedIn /
+            // OnLocked / OnLoggedOut depending on the dev's session
+            // (e.g. CI runners report OnLoggedOut; a workstation with
+            // the screen locked returns OnLocked). Stub platforms
+            // return OnLoggedIn. All three are valid.
             assert!(
-                matches!(state, PcState::OnLoggedIn | PcState::OnLoggedOut),
+                matches!(
+                    state,
+                    PcState::OnLoggedIn | PcState::OnLocked | PcState::OnLoggedOut
+                ),
                 "got {state:?}"
             );
         }
@@ -477,6 +584,202 @@ async fn try_send_state_probe(
         }
         buf.extend_from_slice(&chunk[..n]);
     }
+}
+
+// --- Dispatch tests against the mock Handlers ----------------------------
+//
+// These exercise the full TLS+protocol path with a recording mock so the
+// host doesn't actually sleep / lock / power off.
+
+#[tokio::test]
+async fn sleep_dispatches_through_handlers_and_acks() {
+    let ks = harness::build_keystore(1).await;
+    let mock = Arc::new(mock_handlers::RecordingHandlers::ok());
+    let (addr, _server) =
+        spawn_daemon_with_handlers(ks.dir.path().to_path_buf(), mock.clone()).await;
+
+    let resp = rpc_one(
+        addr,
+        ks.daemon_identity.spki_hash(),
+        &ks.clients[0],
+        &ClientFrame::Sleep,
+    )
+    .await;
+    assert!(matches!(resp, DaemonFrame::Ack { .. }), "got {resp:?}");
+    assert!(
+        mock.invocations().contains(&"sleep"),
+        "expected sleep() to be invoked, got {:?}",
+        mock.invocations()
+    );
+}
+
+#[tokio::test]
+async fn lock_dispatches_through_handlers_and_acks() {
+    let ks = harness::build_keystore(1).await;
+    let mock = Arc::new(mock_handlers::RecordingHandlers::ok());
+    let (addr, _server) =
+        spawn_daemon_with_handlers(ks.dir.path().to_path_buf(), mock.clone()).await;
+
+    let resp = rpc_one(
+        addr,
+        ks.daemon_identity.spki_hash(),
+        &ks.clients[0],
+        &ClientFrame::Lock,
+    )
+    .await;
+    assert!(matches!(resp, DaemonFrame::Ack { .. }), "got {resp:?}");
+    assert!(
+        mock.invocations().contains(&"lock"),
+        "expected lock() to be invoked, got {:?}",
+        mock.invocations()
+    );
+}
+
+#[tokio::test]
+async fn power_off_dispatches_through_handlers_and_acks() {
+    let ks = harness::build_keystore(1).await;
+    let mock = Arc::new(mock_handlers::RecordingHandlers::ok());
+    let (addr, _server) =
+        spawn_daemon_with_handlers(ks.dir.path().to_path_buf(), mock.clone()).await;
+
+    let resp = rpc_one(
+        addr,
+        ks.daemon_identity.spki_hash(),
+        &ks.clients[0],
+        &ClientFrame::PowerOff,
+    )
+    .await;
+    assert!(matches!(resp, DaemonFrame::Ack { .. }), "got {resp:?}");
+    assert!(
+        mock.invocations().contains(&"power_off"),
+        "expected power_off() to be invoked, got {:?}",
+        mock.invocations()
+    );
+}
+
+#[tokio::test]
+async fn sleep_handler_error_returns_internal_to_peer() {
+    use wake_my_pc_daemon::OsHandlerError;
+
+    let ks = harness::build_keystore(1).await;
+    let mock = Arc::new(mock_handlers::RecordingHandlers::ok());
+    *mock.sleep_result.lock().unwrap() = Err(OsHandlerError::OsApi {
+        detail: "synthetic test failure".into(),
+    });
+    let (addr, _server) =
+        spawn_daemon_with_handlers(ks.dir.path().to_path_buf(), mock.clone()).await;
+
+    let resp = rpc_one(
+        addr,
+        ks.daemon_identity.spki_hash(),
+        &ks.clients[0],
+        &ClientFrame::Sleep,
+    )
+    .await;
+    match resp {
+        DaemonFrame::Error {
+            code: ProtocolError::Internal,
+            ..
+        } => {}
+        other => panic!("expected Error{{Internal}} on handler failure, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn power_off_not_permitted_returns_internal_to_peer() {
+    use wake_my_pc_daemon::OsHandlerError;
+
+    let ks = harness::build_keystore(1).await;
+    let mock = Arc::new(mock_handlers::RecordingHandlers::ok());
+    *mock.power_off_result.lock().unwrap() = Err(OsHandlerError::NotPermitted {
+        detail: "synthetic missing privilege".into(),
+    });
+    let (addr, _server) =
+        spawn_daemon_with_handlers(ks.dir.path().to_path_buf(), mock.clone()).await;
+
+    let resp = rpc_one(
+        addr,
+        ks.daemon_identity.spki_hash(),
+        &ks.clients[0],
+        &ClientFrame::PowerOff,
+    )
+    .await;
+    // Principle 1: NotPermitted detail does NOT leak to peer; collapses to Internal.
+    match resp {
+        DaemonFrame::Error {
+            code: ProtocolError::Internal,
+            ..
+        } => {}
+        other => panic!("expected Error{{Internal}}, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn state_probe_routes_through_handlers() {
+    let ks = harness::build_keystore(1).await;
+    let mock = Arc::new(mock_handlers::RecordingHandlers::ok());
+    *mock.state_result.lock().unwrap() = Ok(PcState::OnLocked);
+    let (addr, _server) =
+        spawn_daemon_with_handlers(ks.dir.path().to_path_buf(), mock.clone()).await;
+
+    let resp = rpc_one(
+        addr,
+        ks.daemon_identity.spki_hash(),
+        &ks.clients[0],
+        &ClientFrame::StateProbe,
+    )
+    .await;
+    match resp {
+        DaemonFrame::StateReport(state) => {
+            assert_eq!(state, PcState::OnLocked, "mock should be passed through");
+        }
+        other => panic!("expected StateReport(OnLocked), got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn reauth_blocks_state_change_before_handler_invoked() {
+    use wake_my_pc_core::protocol::ReauthInterval;
+
+    let ks = harness::build_keystore(1).await;
+    let mock = Arc::new(mock_handlers::RecordingHandlers::ok());
+    let (addr, _server) =
+        spawn_daemon_with_handlers(ks.dir.path().to_path_buf(), mock.clone()).await;
+
+    // Set re-auth to 1 day with last-auth at unix time 1ms (effectively
+    // expired forever), then send Sleep — daemon should reject with
+    // RequiresReauth and the handler must NOT be invoked.
+    let resp = rpc_one(
+        addr,
+        ks.daemon_identity.spki_hash(),
+        &ks.clients[0],
+        &ClientFrame::ReauthConfig {
+            interval: ReauthInterval::OneDay,
+        },
+    )
+    .await;
+    assert!(matches!(resp, DaemonFrame::Ack { .. }), "got {resp:?}");
+
+    let resp = rpc_one(
+        addr,
+        ks.daemon_identity.spki_hash(),
+        &ks.clients[0],
+        &ClientFrame::Sleep,
+    )
+    .await;
+    match resp {
+        DaemonFrame::Error {
+            code: ProtocolError::RequiresReauth,
+            ..
+        } => {}
+        other => panic!("expected RequiresReauth, got {other:?}"),
+    }
+    // The handler should not have been called for sleep.
+    assert!(
+        !mock.invocations().contains(&"sleep"),
+        "sleep() should not be invoked when re-auth blocks; got {:?}",
+        mock.invocations()
+    );
 }
 
 async fn drain_one_envelope(

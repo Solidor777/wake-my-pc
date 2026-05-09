@@ -9,11 +9,12 @@
 //! daemon process token. [`prepare`] enables it once at startup;
 //! attempting PowerOff without prepare succeeded surfaces as `NotPermitted`.
 //!
-//! Session state: M2 baseline returns a coarse `OnLoggedIn`/`OnLoggedOut`
-//! by checking for an active console session. Full `OnLocked` distinction
-//! via `WTSSessionInfoEx` lock flags is tracked in TODO.md as an M2
-//! follow-up — the protocol has the variant; the daemon just doesn't
-//! emit it yet.
+//! Session state: distinguishes `OnLoggedOut` / `OnLocked` / `OnLoggedIn`
+//! via `WTSGetActiveConsoleSessionId` + `WTSQuerySessionInformationW(WTSSessionInfoEx)`.
+//! `SessionFlags` is the lock indicator — `WTS_SESSIONSTATE_LOCK = 0`,
+//! `WTS_SESSIONSTATE_UNLOCK = 1`. Pre-Windows-7-SP1 (KB2533690) the senses
+//! were swapped; we target Windows 10/11 + post-hotfix builds and don't
+//! support the inverted older meaning.
 
 use std::ptr::null_mut;
 use std::sync::OnceLock;
@@ -25,7 +26,10 @@ use windows_sys::Win32::Security::{
     TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
 };
 use windows_sys::Win32::System::Power::SetSuspendState;
-use windows_sys::Win32::System::RemoteDesktop::WTSGetActiveConsoleSessionId;
+use windows_sys::Win32::System::RemoteDesktop::{
+    WTS_SESSIONSTATE_LOCK, WTSActive, WTSFreeMemory, WTSGetActiveConsoleSessionId, WTSINFOEXW,
+    WTSQuerySessionInformationW, WTSSessionInfoEx,
+};
 use windows_sys::Win32::System::Shutdown::{
     EWX_FORCE, EWX_POWEROFF, ExitWindowsEx, LockWorkStation, SHTDN_REASON_FLAG_PLANNED,
     SHTDN_REASON_MAJOR_OTHER, SHTDN_REASON_MINOR_OTHER,
@@ -101,12 +105,20 @@ pub fn power_off() -> Result<(), OsHandlerError> {
     Ok(())
 }
 
-/// Probe the current console session and map to a coarse 5-state.
+/// Probe the current console session and map to the 5-state.
 ///
-/// M2 baseline: `OnLoggedIn` if there's an active console session
-/// (`WTSGetActiveConsoleSessionId` returns a valid id), `OnLoggedOut`
-/// otherwise. Locked-vs-unlocked discrimination is M2 follow-up via
-/// `WTSSessionInfoEx` — see TODO.md.
+/// Resolution rules:
+/// - No console session attached → `OnLoggedOut`.
+/// - Console session not in `WTSActive` (Connected / Disconnected /
+///   Init / Down / etc.) → `OnLoggedOut`. The console seat exists but no
+///   user is interacting; e.g. the welcome / sign-in screen at boot.
+/// - Active session with `SessionFlags == WTS_SESSIONSTATE_LOCK` (0) →
+///   `OnLocked`.
+/// - Active session unlocked → `OnLoggedIn`.
+///
+/// `Off` and `Sleeping` are detected client-side (PC unreachable on
+/// LAN); the daemon never emits them — by definition it isn't running
+/// when its host is off / asleep.
 pub fn current_session_state() -> Result<PcState, OsHandlerError> {
     // SAFETY: WTSGetActiveConsoleSessionId takes no args and returns a u32.
     // 0xFFFFFFFF means no session is currently attached to the console.
@@ -114,7 +126,70 @@ pub fn current_session_state() -> Result<PcState, OsHandlerError> {
     if session_id == 0xFFFF_FFFF {
         return Ok(PcState::OnLoggedOut);
     }
-    Ok(PcState::OnLoggedIn)
+
+    // Buffer is allocated by WTS and freed via WTSFreeMemory below. The
+    // function signature types ppbuffer as `*mut PWSTR` because the same
+    // entry point also returns wide strings for other info classes; for
+    // WTSSessionInfoEx the buffer holds a `WTSINFOEXW` struct.
+    let mut buffer: *mut WTSINFOEXW = null_mut();
+    let mut bytes_returned: u32 = 0;
+
+    // SAFETY: hServer = NULL selects the local server (WTS_CURRENT_SERVER_HANDLE).
+    // We pass session_id from WTSGetActiveConsoleSessionId. ppBuffer is a
+    // valid out-pointer to the buffer-pointer slot. On success the API
+    // writes a heap-allocated `WTSINFOEXW`; we must call WTSFreeMemory.
+    // The cast `*mut *mut WTSINFOEXW` → `*mut PWSTR` (== `*mut *mut u16`)
+    // is sound because both are pointer-to-pointer with identical layout
+    // and WTSSessionInfoEx fills it with a struct, not a string. The API
+    // signature is type-erased across info classes.
+    let ok = unsafe {
+        WTSQuerySessionInformationW(
+            null_mut(),
+            session_id,
+            WTSSessionInfoEx,
+            (&mut buffer as *mut *mut WTSINFOEXW).cast(),
+            &mut bytes_returned,
+        )
+    };
+
+    if ok == 0 || buffer.is_null() {
+        // API failure (typically privilege-related on locked-down
+        // installs). Fall back to coarse OnLoggedIn — "session id exists,
+        // assume someone is using it" — rather than emitting a wrong
+        // OnLocked. Lock detection is best-effort by design.
+        return Ok(PcState::OnLoggedIn);
+    }
+
+    // SAFETY: buffer is non-null per the check above and points to a
+    // single `WTSINFOEXW` written by WTSQuerySessionInformationW. The
+    // struct is `Copy + repr(C)` so dereferencing into a stack copy is
+    // sound; we then immediately free the API allocation.
+    let info = unsafe { *buffer };
+    // SAFETY: Level == 1 is what WTSSessionInfoEx returns per MS docs;
+    // the union has only one variant (`WTSInfoExLevel1`), so the access
+    // is sound regardless of `Level`.
+    let level1 = unsafe { info.Data.WTSInfoExLevel1 };
+
+    // SAFETY: buffer was allocated by the WTS API; WTSFreeMemory matches.
+    unsafe { WTSFreeMemory(buffer.cast()) };
+
+    // Only `WTSActive` indicates a user is on the console. Other
+    // states (Connected/Disconnected/Init/Listen/etc.) mean the seat
+    // exists but no one is actually logged in — e.g. the post-boot
+    // sign-in screen returns Disconnected.
+    if level1.SessionState != WTSActive {
+        return Ok(PcState::OnLoggedOut);
+    }
+
+    // SessionFlags after KB2533690: 0 = locked, 1 = unlocked.
+    // We only treat the canonical `WTS_SESSIONSTATE_LOCK` as locked;
+    // any other value (including the API's `WTS_SESSIONSTATE_UNKNOWN`)
+    // falls through to OnLoggedIn rather than risk a false positive.
+    if level1.SessionFlags == WTS_SESSIONSTATE_LOCK as i32 {
+        Ok(PcState::OnLocked)
+    } else {
+        Ok(PcState::OnLoggedIn)
+    }
 }
 
 fn enable_shutdown_privilege() -> Result<(), OsHandlerError> {

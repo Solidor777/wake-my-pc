@@ -13,6 +13,7 @@
 pub mod admin;
 pub mod config;
 pub mod error;
+pub mod handlers;
 pub mod keystore;
 pub mod pairing_flow;
 pub mod pairings;
@@ -23,6 +24,7 @@ pub mod server;
 // Top-level convenience re-exports for the integration-test surface.
 pub use config::{Config, ConfigArgs};
 pub use error::{KeystoreError, OsHandlerError};
+pub use handlers::{Handlers, PlatformHandlers};
 pub use keystore::{KEYSTORE_FORMAT_VERSION, KeystoreContents};
 pub use pairings::PairingRecord;
 
@@ -41,4 +43,15 @@ pub async fn run_server_with_listener(
     listener: tokio::net::TcpListener,
 ) -> anyhow::Result<()> {
     server::run_with_listener(cfg, listener).await
+}
+
+/// Test/integration entry: same as [`run_server_with_listener`] but with
+/// an injected [`Handlers`] impl so tests can verify Sleep / Lock /
+/// PowerOff dispatch without actually toggling the host.
+pub async fn run_server_with_listener_and_handlers(
+    cfg: Config,
+    listener: tokio::net::TcpListener,
+    handlers: std::sync::Arc<dyn Handlers>,
+) -> anyhow::Result<()> {
+    server::run_with_listener_and_handlers(cfg, listener, handlers).await
 }

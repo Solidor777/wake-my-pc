@@ -8,6 +8,7 @@ use tokio::sync::RwLock;
 use wake_my_pc_core::crypto::DeviceIdentity;
 
 use crate::config::Config;
+use crate::handlers::{Handlers, PlatformHandlers};
 use crate::keystore::KeystoreContents;
 
 /// Cheaply-cloneable handle. All clones see the same in-memory state.
@@ -16,23 +17,50 @@ pub struct SharedState {
     inner: Arc<Inner>,
 }
 
-#[derive(Debug)]
 struct Inner {
     contents: RwLock<KeystoreContents>,
     identity: DeviceIdentity,
     config: Config,
+    handlers: Arc<dyn Handlers>,
+}
+
+impl std::fmt::Debug for Inner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `dyn Handlers` is not Debug; print a placeholder. Other fields
+        // are Debug; skip RwLock contents to avoid lock acquisition in a
+        // formatter.
+        f.debug_struct("Inner")
+            .field("identity", &self.identity)
+            .field("config", &self.config)
+            .field("handlers", &"<dyn Handlers>")
+            .finish_non_exhaustive()
+    }
 }
 
 impl SharedState {
     /// Construct from freshly-loaded keystore contents + the parsed
-    /// device identity.
+    /// device identity. Wires the production [`PlatformHandlers`].
     #[must_use]
     pub fn new(contents: KeystoreContents, identity: DeviceIdentity, config: Config) -> Self {
+        Self::with_handlers(contents, identity, config, Arc::new(PlatformHandlers))
+    }
+
+    /// Construct with an injected handlers impl. Used by integration
+    /// tests to swap in a mock; production wires this via
+    /// [`SharedState::new`].
+    #[must_use]
+    pub fn with_handlers(
+        contents: KeystoreContents,
+        identity: DeviceIdentity,
+        config: Config,
+        handlers: Arc<dyn Handlers>,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 contents: RwLock::new(contents),
                 identity,
                 config,
+                handlers,
             }),
         }
     }
@@ -48,6 +76,13 @@ impl SharedState {
     #[must_use]
     pub fn config(&self) -> &Config {
         &self.inner.config
+    }
+
+    /// OS-handler capability. Per-connection dispatch routes Sleep /
+    /// Lock / PowerOff / StateProbe through this so tests can intercept.
+    #[must_use]
+    pub fn handlers(&self) -> &Arc<dyn Handlers> {
+        &self.inner.handlers
     }
 
     /// Read-lock the keystore contents. Use [`snapshot`] for cases

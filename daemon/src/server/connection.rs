@@ -22,7 +22,6 @@ use wake_my_pc_core::protocol::{
 
 use super::SharedState;
 use crate::error::OsHandlerError;
-use crate::platform;
 use crate::reauth;
 
 const READ_CHUNK: usize = 4096;
@@ -233,7 +232,7 @@ async fn dispatch(
                     code: blocked,
                 };
             }
-            handler_to_response(platform::sleep(), request_nonce)
+            handler_to_response(state.handlers().sleep(), request_nonce)
         }
         ClientFrame::Lock => {
             if let Some(blocked) = reauth_state.block_state_change() {
@@ -242,7 +241,7 @@ async fn dispatch(
                     code: blocked,
                 };
             }
-            handler_to_response(platform::lock(), request_nonce)
+            handler_to_response(state.handlers().lock(), request_nonce)
         }
         ClientFrame::PowerOff => {
             if let Some(blocked) = reauth_state.block_state_change() {
@@ -251,10 +250,10 @@ async fn dispatch(
                     code: blocked,
                 };
             }
-            handler_to_response(platform::power_off(), request_nonce)
+            handler_to_response(state.handlers().power_off(), request_nonce)
         }
 
-        ClientFrame::StateProbe => match platform::current_session_state() {
+        ClientFrame::StateProbe => match state.handlers().current_session_state() {
             Ok(s) => DaemonFrame::StateReport(s),
             Err(_) => DaemonFrame::Error {
                 request_nonce,

@@ -39,9 +39,7 @@ Each lands in its own session on the right host / behind the right gate. PLAN.md
 - **Service install + uninstaller** — MSI / signed `.pkg` + launchd plist / `.deb`+`.rpm` + systemd unit. Uninstaller invokes Revoke pre-keystore-wipe. M5 timeline; manual `wake-my-pc-daemon serve` works until then.
 - **Re-auth credential prompts** — `admin::reauth_now` is an always-ok stub. Production needs Windows Hello (WebAuthn) / Touch ID (`LocalAuthentication`) / polkit. Per-OS spike; before v1 ships.
 - **Re-auth pre-expiry notifications** — OS-native at `-3d / -1d / day-of` (only offsets fitting the interval). After credential prompts; shares the UI surface.
-- **Lock-state discrimination (`WTSSessionInfoEx`)** — daemon currently emits `OnLoggedIn` for any active console session; can't distinguish `OnLocked`. Before M4 — phone's default-action button keys off this.
 - **Revoke retry queue** — offline phones never receive Revoke today (handshake fails because they're already out of the live PinSet). Lands with mDNS; shares LAN-discovery code.
-- **Mockable `Handlers` trait** — Sleep/Lock/PowerOff dispatch is integration-untested (would actually sleep the host). Refactor `dispatch` to accept a `Handlers: Send + Sync`. Alongside next M2 protocol work.
 - **`pair` while `serve` is running** — both bind the same port today; pair-while-serving needs a control channel (signal / named pipe / file flag). Multi-device pairing itself already works. M5 polish.
 
 ---

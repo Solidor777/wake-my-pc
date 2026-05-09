@@ -30,7 +30,7 @@ Canonical exit-criteria detail lives in the per-milestone sections below; git lo
 ## In-progress
 
 - **M0 mobile portion** — deferred until on a macOS / Android-SDK host. `ios/` and `android/` ship READMEs only.
-- **M2 Windows baseline (2026-05-08).** Daemon binary on Windows: tokio listener, DPAPI keystore, Win32 sleep/lock/poweroff handlers, re-auth state machine, full CLI. Multi-device pairing (Vec<PairingRecord>) is locked-in. 75 tests; pushed as `f51b753`. macOS + Linux platform code, mDNS, service install, credential prompts, notifications, lock-state discrimination, revoke retry queue all deferred — see `TODO.md` "M2 follow-up work".
+- **M2 Windows baseline (2026-05-08).** Daemon binary on Windows: tokio listener, DPAPI keystore, Win32 sleep/lock/poweroff handlers, re-auth state machine, full CLI. Multi-device pairing (Vec<PairingRecord>) is locked-in. 75 tests at first push (`f51b753`); 87 after the 2026-05-08 follow-up shipping the mockable `Handlers` trait + Windows `WTSSessionInfoEx` lock-state discrimination. macOS + Linux platform code, mDNS, service install, credential prompts, notifications, revoke retry queue all still deferred — see `TODO.md` "M2 follow-up work".
 
 ---
 

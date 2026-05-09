@@ -7,8 +7,8 @@
 //!   serve()
 //!     ├── load keystore (DPAPI on Windows)
 //!     ├── core::crypto::DeviceIdentity::from_bytes
-//!     ├── platform::prepare()  (enable SE_SHUTDOWN_NAME)
-//!     ├── shared SharedState  (Arc<RwLock<KeystoreContents>>)
+//!     ├── handlers.prepare()  (enable SE_SHUTDOWN_NAME on Windows)
+//!     ├── shared SharedState  (Arc<RwLock<KeystoreContents>> + Arc<dyn Handlers>)
 //!     ├── ctrl-c task       ──┐
 //!     └── accept-loop task  ──┴──▶ drop on shutdown
 //!         └── per-connection task: TLS handshake + protocol::run
@@ -18,14 +18,16 @@ mod connection;
 mod listener;
 mod state;
 
+use std::sync::Arc;
+
 use anyhow::Context;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 use wake_my_pc_core::crypto::DeviceIdentity;
 
 use crate::config::Config;
+use crate::handlers::{Handlers, PlatformHandlers};
 use crate::keystore;
-use crate::platform;
 
 pub use state::SharedState;
 
@@ -40,8 +42,19 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
 
 /// Run the daemon listener with a pre-bound `TcpListener`. Integration
 /// tests use this so they can grab the ephemeral port via
-/// `listener.local_addr()` before handing it over.
+/// `listener.local_addr()` before handing it over. Wires production
+/// [`PlatformHandlers`].
 pub async fn run_with_listener(cfg: Config, listener: TcpListener) -> anyhow::Result<()> {
+    run_with_listener_and_handlers(cfg, listener, Arc::new(PlatformHandlers)).await
+}
+
+/// Run with an injected [`Handlers`] impl. Test-only entry; production
+/// uses [`run_with_listener`].
+pub async fn run_with_listener_and_handlers(
+    cfg: Config,
+    listener: TcpListener,
+    handlers: Arc<dyn Handlers>,
+) -> anyhow::Result<()> {
     keystore::ensure_data_dir(&cfg.data_dir).await?;
 
     let contents = match keystore::load(&cfg.keystore_path()).await? {
@@ -57,13 +70,13 @@ pub async fn run_with_listener(cfg: Config, listener: TcpListener) -> anyhow::Re
     let identity = DeviceIdentity::from_bytes(&contents.device_identity_bytes())
         .context("loading device identity from keystore")?;
 
-    if let Err(e) = platform::prepare() {
+    if let Err(e) = handlers.prepare() {
         // Non-fatal: daemon can still run sleep+lock without shutdown
         // privilege; PowerOff will surface NotPermitted to the peer.
-        warn!("platform::prepare() failed (PowerOff will be unavailable): {e}");
+        warn!("handlers.prepare() failed (PowerOff will be unavailable): {e}");
     }
 
-    let state = SharedState::new(contents, identity, cfg.clone());
+    let state = SharedState::with_handlers(contents, identity, cfg.clone(), handlers);
 
     info!(
         "wake-my-pc-daemon listening on {} ({} pairings loaded)",
