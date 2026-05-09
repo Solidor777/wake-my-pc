@@ -180,6 +180,8 @@ The daemon prints the 6-digit `pairing_code` and the SPKI hash hex. The phone:
 1. User picks "Enter manually" on phone, types the 6-digit code AND the SPKI hash.
 2. Phone pins SPKI hash from manual entry, then proceeds as steps 2–6 above.
 
+**Multi-device support:** PLAN.md "Locked architectural decisions" — the daemon's keystore holds a `Vec<PairingRecord>`, one per paired phone/tablet. Each pairing has its own SPKI; rustls's pinset is the union of all non-revoked SPKIs, rebuilt per accept. Re-pairing the same SPKI (e.g. phone wipe + re-pair) replaces the prior record rather than accumulating duplicates. There is no per-pairing limit; revocation is per-device via `daemon-cli revoke <phone-name>`. Shared-multi-USER (different humans, same PC) is post-v1 M9 — orthogonal authorization layer.
+
 **Brute-force bound (state-machine-enforced):**
 - Per-window attempt budget: `MAX_PAIRING_ATTEMPTS = 5`. Wrong-code rejections (and out-of-range codes — values `>= 1_000_000`) increment the counter; hitting the cap forces the state machine to `Idle` and the user must re-run `daemon-cli pair`.
 - 5 guesses against a 10⁶ search space ⇒ ≤ 5×10⁻⁶ success per window, regardless of how fast the attacker can probe within the 5-minute TTL. Caller (M2 daemon) does not need to add additional rate limiting; defaults are sound out of the box.

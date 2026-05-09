@@ -14,6 +14,12 @@ For canonical decisions see `PRINCIPLES.md` and `PLAN.md` — entries here just 
 ### CI workflows unverified until first push
 `per-pr.yml` and `pre-release.yml` are syntactically reasonable but neither has run against GitHub Actions. iOS/Android jobs in `pre-release.yml` will fail until mobile scaffolds exist — intentional. First push reveals any YAML mistakes. **Status: open.**
 
+### M2 baseline: TLS 1.3 client-side handshake completes optimistically
+Integration tests originally asserted `connector.connect(...).is_err()` for unpaired clients. That fails: TLS 1.3 client-side `connect()` returns `Ok` after sending its `Finished` message, BEFORE the server runs `verify_client_cert`. The server's reject arrives later as a TLS alert visible on the next `read`/`write`. Tests fixed to actually exchange application bytes (`try_send_state_probe`) and check for `TlsRejected` outcome. Future agents writing TLS-mTLS tests must follow the same pattern. **Status: accepted.**
+
+### M2 baseline: pair-vs-serve port contention
+Current `pair` and `serve` subcommands both bind the configured port; running them simultaneously fails. Operationally this means the user stops `serve`, runs `pair`, restarts `serve`. Multi-device pairing itself works (re-running `pair` re-uses the keystore identity, appends/replaces the new pairing) — the contention is purely about the operational dance. Unifying into a single persistent process with a control channel is `TODO.md` ("`pair` while `serve` is running"). **Status: accepted.**
+
 ### Unmaintained transitive deps from postcard + uniffi
 `cargo audit` reports three unmaintained-warnings (no vulnerabilities; exit 0): `atomic-polyfill 1.0.3` via heapless via postcard, `bincode 1.3.3` via uniffi_macros, `paste 1.0.15` via uniffi. Tracked in `TODO.md` as a watch item — bump becomes blocking only if any flips to a vulnerability advisory. M1 uses `cargo audit` (default) which fails on vulnerabilities only; `--deny warnings` is intentionally NOT used per Principle 1 supply-chain note (block on advisories that are real, not on maintainer-life-event noise). **Status: open.**
 
