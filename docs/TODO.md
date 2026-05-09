@@ -31,47 +31,18 @@ Accepted tradeoffs from locked decisions. Each must surface clearly in v1 onboar
 
 ## M2 follow-up work (deferred from 2026-05-08 Windows baseline)
 
-Each lands in its own session on the right environment / behind the right risk gate.
+Each lands in its own session on the right host / behind the right gate. PLAN.md M2 carries the canonical OS-API + behaviour spec.
 
-### macOS + Linux platform code
-**What:** `daemon/src/platform/{macos,linux}.rs` implementations of `sleep`/`lock`/`power_off`/`current_session_state`/`prepare`. Currently stubbed with `OsApi("not implemented")`. macOS: `pmset` + `loginwindow` + `shutdown -h now` per PLAN.md M2. Linux: DBus `login1.Manager.{Suspend,PowerOff}` + `loginctl lock-session`.
-**When to revisit:** next session on a Mac (iOS env) and/or a Linux box. M2 close-out blocked until both ship.
-
-### Per-OS keystore encryption (Mac + Linux)
-**What:** `daemon/src/keystore/platform.rs` non-Windows path currently returns `Err("not implemented")`. Mac: Keychain `SecItemAdd` / `SecItemCopyMatching`. Linux: libsecret + machine-id-derived AEAD fallback per PLAN.md "Locked architectural decisions".
-**When:** lands with the platform code above; same session.
-
-### mDNS / Bonjour service advertisement
-**What:** Daemon broadcasts `_wake-my-pc._tcp.local` on the LAN so the phone's pairing flow can resolve the daemon without manual IP entry. PLAN.md M2 requires this for the QR + 6-digit pairing UX.
-**When:** post-platform-parity session. `mdns-sd` (pure Rust, async) is the leading candidate; revisit after the spike.
-
-### Service installation + uninstaller
-**What:** Windows MSI/MSIX + SCM service registration; macOS signed `.pkg` + launchd plist; Linux `.deb`/`.rpm` + systemd unit. Uninstaller invokes Revoke broadcast pre-keystore-wipe (best-effort).
-**When:** beta hardening (M5) timeline. Until then, manual install via copying the binary + `wake-my-pc-daemon serve` works.
-
-### Re-auth credential prompts
-**What:** `admin::reauth_now` currently runs an always-ok stub. Production: Windows Hello via WebAuthn API; macOS Touch ID via `LocalAuthentication.LAContext`; Linux polkit `pkexec` or PAM. Deep platform integration; deserves a dedicated session per OS.
-**When:** before v1 ships. Tracked separately because each prompt is its own platform spike.
-
-### Re-auth pre-expiry notifications
-**What:** OS-native notifications at `expiry - 3d`, `expiry - 1d`, day-of (only the offsets that fit the configured interval). Notification action opens the credential prompt (same code path as `reauth-now`).
-**When:** after credential prompts land — they share a UI surface.
-
-### Lock-state discrimination (`WTSSessionInfoEx`)
-**What:** Daemon currently returns `OnLoggedIn` whenever a console session exists. Full 5-state needs the `WTS_SESSIONFLAG_LOCK` (which is documented-inverted on Win 7+) to distinguish `OnLocked` from `OnLoggedIn`. M2 baseline emits `OnLoggedIn` for both — protocol has the variant; daemon just doesn't fire it yet.
-**When:** before M4 ships. The phone-side default-action button keys off this distinction.
-
-### Revoke retry queue
-**What:** When `daemon-cli revoke <phone>` is invoked while the phone is offline, the daemon should queue a Revoke push and deliver it opportunistically (mDNS browser detects phone returns to LAN, daemon connects, sends Revoke, waits for `RevokeAck`, then drops the pairing entry). Current baseline marks `revoked = true` and `revoke_pending = true` in the keystore — phone won't get the push until it reconnects to a daemon serving with the new pinset (which excludes it, so the connection fails and the phone never receives Revoke).
-**When:** with mDNS responder. They share the LAN-discovery code.
-
-### Mockable `Handlers` trait for destructive-command tests
-**What:** Sleep / Lock / PowerOff dispatch is currently untested at the integration level because it would actually sleep/lock/power-off the host. Refactor `dispatch` to accept a `Handlers: Send + Sync` trait so tests inject a recording mock. M2 baseline tests cover StateProbe + ReauthStatus + ReauthConfig + RevokeAck round-trips; the destructive trio is verified only by direct unit tests of `platform::*` (which themselves don't run in CI).
-**When:** alongside any further M2 protocol work — the refactor surface is small but worth doing once.
-
-### `pair` while `serve` is running
-**What:** The current model requires stopping `serve` before running `pair` (both bind the same port). UX would prefer one persistent daemon process where the user signals "enter pairing window" via a control channel (file flag, named pipe, signal). Multi-device pairing already works (`pair` re-uses the existing keystore identity); this is purely about not having to restart.
-**When:** before beta. Probably during M5 polish.
+- **macOS + Linux platform code** — `daemon/src/platform/{macos,linux}.rs` currently stubbed `OsApi("not implemented")`. Revisit on Mac (also iOS env) and a Linux box. M2 close-out blocked until both ship.
+- **Per-OS keystore encryption (Mac + Linux)** — `daemon/src/keystore/platform.rs` non-Windows path returns `Err`. Same session as platform code.
+- **mDNS / Bonjour advertisement** — `_wake-my-pc._tcp.local` so the phone's pairing flow resolves without manual IP entry. Leading candidate `mdns-sd`. After platform parity.
+- **Service install + uninstaller** — MSI / signed `.pkg` + launchd plist / `.deb`+`.rpm` + systemd unit. Uninstaller invokes Revoke pre-keystore-wipe. M5 timeline; manual `wake-my-pc-daemon serve` works until then.
+- **Re-auth credential prompts** — `admin::reauth_now` is an always-ok stub. Production needs Windows Hello (WebAuthn) / Touch ID (`LocalAuthentication`) / polkit. Per-OS spike; before v1 ships.
+- **Re-auth pre-expiry notifications** — OS-native at `-3d / -1d / day-of` (only offsets fitting the interval). After credential prompts; shares the UI surface.
+- **Lock-state discrimination (`WTSSessionInfoEx`)** — daemon currently emits `OnLoggedIn` for any active console session; can't distinguish `OnLocked`. Before M4 — phone's default-action button keys off this.
+- **Revoke retry queue** — offline phones never receive Revoke today (handshake fails because they're already out of the live PinSet). Lands with mDNS; shares LAN-discovery code.
+- **Mockable `Handlers` trait** — Sleep/Lock/PowerOff dispatch is integration-untested (would actually sleep the host). Refactor `dispatch` to accept a `Handlers: Send + Sync`. Alongside next M2 protocol work.
+- **`pair` while `serve` is running** — both bind the same port today; pair-while-serving needs a control channel (signal / named pipe / file flag). Multi-device pairing itself already works. M5 polish.
 
 ---
 

@@ -1,5 +1,5 @@
 # Project description
-Android / iOsapp for toggling a PC (Windows / Mac / Linux) awake or asleep via a single button press.
+Android / iOS app for toggling a PC (Windows / Mac / Linux) awake or asleep via a single button press.
 
 # Reference docs
 - **`docs/PRINCIPLES.md`** — engine-wide invariants, code quality / style, testing rules. Source of truth.
