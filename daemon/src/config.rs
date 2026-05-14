@@ -12,8 +12,11 @@
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+#[cfg(not(windows))]
+use anyhow::Context;
+use anyhow::{Result, anyhow};
 use clap::Args;
+#[cfg(not(windows))]
 use directories::ProjectDirs;
 
 /// Default listener port. Settled at install time in production.
@@ -48,17 +51,19 @@ pub struct Config {
 
 impl Config {
     /// Resolve [`ConfigArgs`] to a runtime config. Uses platform-appropriate
-    /// data-directory defaults (`%APPDATA%\wake-my-pc` on Windows,
-    /// `~/Library/Application Support/io.wake-my-pc.wake-my-pc` on macOS,
-    /// `$XDG_DATA_HOME/wake-my-pc` on Linux) when `--data-dir` is unset.
+    /// data-directory defaults when `--data-dir` is unset:
+    ///
+    /// - **Windows:** `%PROGRAMDATA%\wake-my-pc` (machine-wide). The
+    ///   service runs as LocalSystem and the keystore is encrypted with
+    ///   `CRYPTPROTECT_LOCAL_MACHINE`; the install MSI ACLs the directory
+    ///   to LocalSystem + Administrators only.
+    /// - **macOS:** `~/Library/Application Support/io.wake-my-pc.wake-my-pc`.
+    /// - **Linux:** `$XDG_DATA_HOME/wake-my-pc` (typically
+    ///   `~/.local/share/wake-my-pc`).
     pub fn from_args(args: ConfigArgs) -> Result<Self> {
         let data_dir = match args.data_dir {
             Some(p) => p,
-            None => {
-                let dirs = ProjectDirs::from("io", "wake-my-pc", "wake-my-pc")
-                    .context("could not resolve OS data directory")?;
-                dirs.data_dir().to_path_buf()
-            }
+            None => default_data_dir()?,
         };
         let bind = SocketAddr::new(args.bind, args.port);
         Ok(Self { data_dir, bind })
@@ -79,5 +84,29 @@ impl Config {
             data_dir,
             bind: SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0),
         }
+    }
+}
+
+/// OS-appropriate default keystore directory.
+///
+/// On Windows the daemon runs as a LocalSystem service and stores its
+/// keystore under `%PROGRAMDATA%` so every paired phone hits the same
+/// blob regardless of which user's session is currently active. The
+/// directory's confidentiality is enforced by ACLs at install-time
+/// (LocalSystem + Administrators read/write; Users denied) — DPAPI
+/// scope alone wouldn't be enough since `CRYPTPROTECT_LOCAL_MACHINE`
+/// lets any process on the box decrypt.
+fn default_data_dir() -> Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        let program_data = std::env::var_os("ProgramData")
+            .ok_or_else(|| anyhow!("PROGRAMDATA env var not set; cannot resolve data dir"))?;
+        Ok(PathBuf::from(program_data).join("wake-my-pc"))
+    }
+    #[cfg(not(windows))]
+    {
+        let dirs = ProjectDirs::from("io", "wake-my-pc", "wake-my-pc")
+            .context("could not resolve OS data directory")?;
+        Ok(dirs.data_dir().to_path_buf())
     }
 }

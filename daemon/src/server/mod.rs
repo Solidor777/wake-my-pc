@@ -49,12 +49,29 @@ pub async fn run_with_listener(cfg: Config, listener: TcpListener) -> anyhow::Re
 }
 
 /// Run with an injected [`Handlers`] impl. Test-only entry; production
-/// uses [`run_with_listener`].
+/// uses [`run_with_listener`]. Shutdown is ctrl-c.
 pub async fn run_with_listener_and_handlers(
     cfg: Config,
     listener: TcpListener,
     handlers: Arc<dyn Handlers>,
 ) -> anyhow::Result<()> {
+    let shutdown = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    run_with_listener_handlers_shutdown(cfg, listener, handlers, shutdown).await
+}
+
+/// Service-mode entry: caller provides the shutdown future. SCM stops
+/// the daemon by signalling `shutdown` from its control-handler thread.
+pub async fn run_with_listener_handlers_shutdown<S>(
+    cfg: Config,
+    listener: TcpListener,
+    handlers: Arc<dyn Handlers>,
+    shutdown: S,
+) -> anyhow::Result<()>
+where
+    S: std::future::Future<Output = ()>,
+{
     keystore::ensure_data_dir(&cfg.data_dir).await?;
 
     let contents = match keystore::load(&cfg.keystore_path()).await? {
@@ -87,5 +104,5 @@ pub async fn run_with_listener_and_handlers(
         state.snapshot().await.pairings.len()
     );
 
-    listener::accept_loop(state, listener).await
+    listener::accept_loop(state, listener, shutdown).await
 }

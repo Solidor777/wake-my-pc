@@ -68,6 +68,7 @@ mod harness {
                 last_authenticated_at_unix_ms: 1_000,
                 revoked: false,
                 revoke_pending: false,
+                last_known_address: None,
             });
             clients.push(client);
         }

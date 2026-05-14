@@ -27,8 +27,15 @@ use crate::reauth;
 const READ_CHUNK: usize = 4096;
 
 /// Run the per-connection protocol loop until the peer disconnects or
-/// an unrecoverable error occurs.
-pub async fn run(mut tls: TlsStream<TcpStream>, state: SharedState) -> Result<()> {
+/// an unrecoverable error occurs. `peer_addr` is the SocketAddr the
+/// phone connected from; the daemon caches it on the pairing record so
+/// the uninstall-time Revoke broadcast (TODO M2 follow-up) and the
+/// future revoke retry queue (TODO M2 follow-up + M4) have a target.
+pub async fn run(
+    mut tls: TlsStream<TcpStream>,
+    state: SharedState,
+    peer_addr: std::net::SocketAddr,
+) -> Result<()> {
     let peer_spki = peer_spki_from_tls(&tls).context("extracting peer SPKI from TLS session")?;
 
     // Pre-flight: confirm the SPKI maps to a non-revoked pairing. The
@@ -46,6 +53,26 @@ pub async fn run(mut tls: TlsStream<TcpStream>, state: SharedState) -> Result<()
                 send_error_and_close(&mut tls, 0, ProtocolError::Revoked).await?;
                 return Ok(());
             }
+        }
+    }
+
+    // Record the phone's source address so the uninstaller can target
+    // it later. Best-effort: persistence failure is logged, not fatal.
+    {
+        let mut w = state.write().await;
+        let mut changed = false;
+        for p in &mut w.pairings {
+            if p.client_spki == peer_spki && p.last_known_address != Some(peer_addr) {
+                p.last_known_address = Some(peer_addr);
+                changed = true;
+                break;
+            }
+        }
+        drop(w);
+        if changed
+            && let Err(e) = state.save().await
+        {
+            warn!("keystore save (last_known_address update) failed: {e}");
         }
     }
 

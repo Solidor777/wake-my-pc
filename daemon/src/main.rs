@@ -25,6 +25,52 @@ fn main() -> ExitCode {
         }
     };
 
+    // service-run / install-service / uninstall-service are sync paths
+    // that don't want a Config or a tokio runtime — short-circuit them.
+    #[cfg(windows)]
+    {
+        match &args.command {
+            Command::ServiceRun => {
+                return match wake_my_pc_daemon::service::service_dispatcher_start() {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        error!("service-run: {e:#}");
+                        ExitCode::FAILURE
+                    }
+                };
+            }
+            Command::InstallService { binary } => {
+                let path = match binary.clone() {
+                    Some(p) => p,
+                    None => match std::env::current_exe() {
+                        Ok(p) => p,
+                        Err(e) => {
+                            error!("could not resolve current_exe: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    },
+                };
+                return match wake_my_pc_daemon::service::install_service(path) {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        error!("install-service: {e:#}");
+                        ExitCode::FAILURE
+                    }
+                };
+            }
+            Command::UninstallService => {
+                return match wake_my_pc_daemon::service::uninstall_service() {
+                    Ok(()) => ExitCode::SUCCESS,
+                    Err(e) => {
+                        error!("uninstall-service: {e:#}");
+                        ExitCode::FAILURE
+                    }
+                };
+            }
+            _ => {}
+        }
+    }
+
     let cfg = match Config::from_args(args.config) {
         Ok(c) => c,
         Err(e) => {
@@ -40,6 +86,12 @@ fn main() -> ExitCode {
             Command::ListPaired => admin::list_paired(cfg).await,
             Command::Revoke { phone_name } => admin::revoke(cfg, phone_name).await,
             Command::ReauthNow => admin::reauth_now(cfg).await,
+            Command::UninstallRevokeBroadcast => admin::uninstall_revoke_broadcast(cfg).await,
+            // Windows-only commands handled above before runtime build.
+            #[cfg(windows)]
+            Command::ServiceRun
+            | Command::InstallService { .. }
+            | Command::UninstallService => unreachable!(),
         }
     });
 

@@ -18,22 +18,27 @@ use wake_my_pc_core::crypto::{PinSet, server_config_for_pinned_clients};
 use super::SharedState;
 use super::connection;
 
-/// Accept connections forever (or until ctrl-c). The `TcpListener` is
+/// Accept connections until `shutdown` resolves. The `TcpListener` is
 /// pre-bound by the caller — see [`super::run`] for the bind site.
-pub async fn accept_loop(state: SharedState, listener: TcpListener) -> anyhow::Result<()> {
+/// `shutdown` lets the SCM service handler interrupt the loop on
+/// SERVICE_CONTROL_STOP just as cleanly as a console ctrl-c.
+pub async fn accept_loop<S: std::future::Future<Output = ()>>(
+    state: SharedState,
+    listener: TcpListener,
+    shutdown: S,
+) -> anyhow::Result<()> {
     let local_addr = listener.local_addr()?;
     info!("listening on {local_addr}");
 
     let provider = Arc::new(rustls::crypto::ring::default_provider());
 
-    let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
 
     loop {
         tokio::select! {
             biased;
             _ = &mut shutdown => {
-                info!("ctrl-c received; stopping listener");
+                info!("shutdown signal received; stopping listener");
                 return Ok(());
             }
             accept = listener.accept() => {
@@ -56,7 +61,7 @@ pub async fn accept_loop(state: SharedState, listener: TcpListener) -> anyhow::R
 
                 tokio::spawn(async move {
                     debug!("connection from {peer_addr}");
-                    if let Err(e) = handle_connection(acceptor, tcp, state).await {
+                    if let Err(e) = handle_connection(acceptor, tcp, state, peer_addr).await {
                         debug!("connection from {peer_addr} ended: {e:#}");
                     }
                 });
@@ -86,7 +91,8 @@ async fn handle_connection(
     acceptor: TlsAcceptor,
     tcp: tokio::net::TcpStream,
     state: SharedState,
+    peer_addr: std::net::SocketAddr,
 ) -> anyhow::Result<()> {
     let tls = acceptor.accept(tcp).await.context("TLS handshake")?;
-    connection::run(tls, state).await
+    connection::run(tls, state, peer_addr).await
 }

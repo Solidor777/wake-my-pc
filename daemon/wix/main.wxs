@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="windows-1252"?>
+<!--
+  WiX 3.x source for the wake-my-pc-daemon MSI.
+
+  Build with:
+    cargo install cargo-wix
+    cargo wix --package wake-my-pc-daemon -p wake-my-pc-daemon
+
+  Requires the WiX 3.x SDK (candle.exe + light.exe) on PATH and
+  WixUtilExtension (provides util:PermissionEx for the data-dir ACL).
+  cargo-wix passes `-ext WixUtilExtension` per the
+  `[package.metadata.wix]` section in Cargo.toml.
+
+  Locked decisions baked here (matches PLAN.md M2 + 2026-05-08 service
+  install session):
+
+  - InstallScope = perMachine. Daemon runs as a Windows service, not
+    per-user. SCM only knows about machine-wide services.
+
+  - Binary at %ProgramFiles%\wake-my-pc\wake-my-pc-daemon.exe.
+
+  - Data dir at %CommonAppData%\wake-my-pc with ACL = SYSTEM full,
+    Administrators full, others denied. Confidentiality of the keystore
+    relies on these ACLs (machine-DPAPI alone can be decrypted by any
+    process on the box; ACLs are what make it owner-only).
+
+  - Service: name "wake-my-pc", DisplayName "Wake My PC", LocalSystem,
+    Start=Auto. Launched with `wake-my-pc-daemon.exe service-run` —
+    the binary detects this and hands off to service_dispatcher::start.
+
+  - Uninstall sequence (best-effort revoke broadcast pre-keystore-wipe
+    per Principle 1):
+      1. Custom action: `wake-my-pc-daemon uninstall-revoke-broadcast`
+         (return ignored — failure must not block the uninstall).
+      2. ServiceControl Stop+Remove.
+      3. File remove from %ProgramFiles%.
+      4. Folder remove from %CommonAppData% (keystore.bin gone with it).
+
+  - UpgradeCode is locked at first generation (78F9F85A-...). Changing
+    it would break upgrade detection. New version = bump Product
+    Version, NEVER UpgradeCode.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+
+  <Product Id="*"
+           Name="Wake My PC"
+           UpgradeCode="78F9F85A-2C90-4F9D-8C19-1A11C58C9BBE"
+           Manufacturer="wake-my-pc"
+           Language="1033"
+           Codepage="1252"
+           Version="0.1.0">
+
+    <Package Id="*"
+             Keywords="Installer"
+             Description="Wake My PC daemon installer"
+             Manufacturer="wake-my-pc"
+             InstallerVersion="450"
+             Languages="1033"
+             Compressed="yes"
+             InstallScope="perMachine"
+             SummaryCodepage="1252" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Wake My PC is already installed." />
+
+    <Media Id="1" Cabinet="media1.cab" EmbedCab="yes" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="APPLICATIONROOTDIRECTORY" Name="wake-my-pc">
+
+          <Component Id="DaemonBinary" Guid="*" Win64="yes">
+            <File Id="DaemonExe"
+                  Name="wake-my-pc-daemon.exe"
+                  Source="target\release\wake-my-pc-daemon.exe"
+                  KeyPath="yes" />
+
+            <ServiceInstall Id="WakeMyPcServiceInstall"
+                            Name="wake-my-pc"
+                            DisplayName="Wake My PC"
+                            Description="Listens on LAN for authenticated wake/sleep/lock commands from paired phones."
+                            Type="ownProcess"
+                            Start="auto"
+                            ErrorControl="normal"
+                            Account="LocalSystem"
+                            Vital="yes"
+                            Arguments="service-run" />
+
+            <ServiceControl Id="WakeMyPcServiceControl"
+                            Name="wake-my-pc"
+                            Start="install"
+                            Stop="both"
+                            Remove="uninstall"
+                            Wait="yes" />
+          </Component>
+
+        </Directory>
+      </Directory>
+
+      <Directory Id="CommonAppDataFolder">
+        <Directory Id="DataRoot" Name="wake-my-pc">
+
+          <Component Id="DataDirectory" Guid="*" Win64="yes">
+            <CreateFolder>
+              <!-- LocalSystem: full control (service runs as SYSTEM and
+                   needs to read+write the keystore). Administrators:
+                   full control (admins manage the install). All other
+                   principals: no permissions granted, so denied by
+                   default. NTFS inheritance from the parent is not
+                   used; this is the canonical ACL. -->
+              <util:PermissionEx User="SYSTEM" GenericAll="yes" />
+              <util:PermissionEx User="Administrators" GenericAll="yes" />
+            </CreateFolder>
+            <RemoveFolder Id="RemoveDataRoot" On="uninstall" />
+            <!-- Required: every Component needs a KeyPath. We use a
+                 throwaway HKLM registry value because RemoveFolder
+                 components can't be the KeyPath themselves. -->
+            <RegistryValue Root="HKLM"
+                           Key="Software\wake-my-pc"
+                           Name="data-dir-installed"
+                           Type="integer"
+                           Value="1"
+                           KeyPath="yes" />
+          </Component>
+
+        </Directory>
+      </Directory>
+
+    </Directory>
+
+    <!-- Pre-uninstall: tell the daemon to broadcast Revoke to every
+         paired phone's last-known address. Fails on a stuck phone or
+         a phone-listener-not-yet-implemented (M4 work) — Return="ignore"
+         keeps the uninstall flowing. -->
+    <CustomAction Id="UninstallRevokeBroadcast"
+                  FileKey="DaemonExe"
+                  ExeCommand="uninstall-revoke-broadcast"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <InstallExecuteSequence>
+      <!-- Run before StopServices, which is itself before
+           DeleteServices and RemoveFiles. The Custom action only fires
+           when the user is uninstalling (REMOVE="ALL"). -->
+      <Custom Action="UninstallRevokeBroadcast" Before="StopServices">
+        REMOVE="ALL"
+      </Custom>
+    </InstallExecuteSequence>
+
+    <Feature Id="Main" Title="Wake My PC" Level="1">
+      <ComponentRef Id="DaemonBinary" />
+      <ComponentRef Id="DataDirectory" />
+    </Feature>
+
+  </Product>
+</Wix>

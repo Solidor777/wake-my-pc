@@ -1,9 +1,15 @@
 //! Per-OS keystore-encryption shims. Returns ciphertext bytes that the
 //! mod.rs layer writes to disk.
 //!
-//! - **Windows** (`cfg(windows)`): DPAPI `CryptProtectData` / `CryptUnprotectData`
-//!   keyed to the local user account. Defense in depth: a cold copy of
-//!   the file taken to another machine cannot be decrypted.
+//! - **Windows** (`cfg(windows)`): DPAPI `CryptProtectData` /
+//!   `CryptUnprotectData` with `CRYPTPROTECT_LOCAL_MACHINE` so the
+//!   LocalSystem service can read+write the same blob across user
+//!   sessions. A cold copy of the file taken to another machine cannot
+//!   be decrypted (DPAPI is machine-bound either way). On-machine
+//!   confidentiality from non-admin users is enforced by ACLs on the
+//!   ProgramData install directory — see the WiX install component.
+//!   `CRYPTPROTECT_UI_FORBIDDEN` is set so DPAPI never prompts —
+//!   non-interactive failure beats hung-on-prompt for a service.
 //! - **Other** (M2 follow-up): unimplemented at this point. Compiles to
 //!   a stub that returns an explicit error so a non-Windows build of M2
 //!   fails honestly rather than persisting plaintext.
@@ -14,10 +20,14 @@ mod windows_dpapi {
 
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Cryptography::{
-        CRYPT_INTEGER_BLOB, CryptProtectData, CryptUnprotectData,
+        CRYPT_INTEGER_BLOB, CRYPTPROTECT_LOCAL_MACHINE, CRYPTPROTECT_UI_FORBIDDEN,
+        CryptProtectData, CryptUnprotectData,
     };
 
-    /// Encrypt with DPAPI to current user. Returns ciphertext.
+    /// Encrypt with machine-scope DPAPI. Any process on the same machine
+    /// (with read access to the file) can decrypt — confidentiality from
+    /// non-admin users is enforced by ACLs on the ProgramData install
+    /// directory, not by DPAPI scope alone.
     pub fn encrypt(plain: &[u8]) -> Result<Vec<u8>, String> {
         // SAFETY: We pass `plain` as a non-null pointer with the correct
         // matching length. CryptProtectData allocates the output via
@@ -41,7 +51,7 @@ mod windows_dpapi {
                 null_mut(), // optional entropy
                 null_mut(), // reserved
                 null_mut(), // prompt struct
-                0,          // flags
+                CRYPTPROTECT_LOCAL_MACHINE | CRYPTPROTECT_UI_FORBIDDEN,
                 &mut out_blob,
             );
             if ok == 0 {
@@ -82,7 +92,7 @@ mod windows_dpapi {
                 null_mut(),
                 null_mut(),
                 null_mut(),
-                0,
+                CRYPTPROTECT_UI_FORBIDDEN,
                 &mut out_blob,
             );
             if ok == 0 {

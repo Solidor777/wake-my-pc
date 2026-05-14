@@ -21,6 +21,9 @@ pub mod platform;
 pub mod reauth;
 pub mod server;
 
+#[cfg(windows)]
+pub mod service;
+
 // Top-level convenience re-exports for the integration-test surface.
 pub use config::{Config, ConfigArgs};
 pub use error::{KeystoreError, OsHandlerError};

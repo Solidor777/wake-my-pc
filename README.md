@@ -38,6 +38,20 @@ sudo apt install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
 
 Mobile shells are scaffold-pending as of 2026-05-08 — the desktop machine these were initialized on doesn't have Xcode or the Android SDK, and shipping unvalidated mobile config would just create work for the next agent. See `ios/README.md` and `android/README.md` for the next steps.
 
+### Windows installer (MSI)
+
+The daemon ships as a LocalSystem SCM service installed via MSI. Build it with [cargo-wix](https://github.com/volks73/cargo-wix) — requires the WiX 3.x SDK (`candle.exe` + `light.exe`) on PATH:
+
+```
+cargo install cargo-wix
+cargo build --release -p wake-my-pc-daemon
+cargo wix --package wake-my-pc-daemon -p wake-my-pc-daemon --no-build
+```
+
+The MSI installs `wake-my-pc-daemon.exe` to `%ProgramFiles%\wake-my-pc\`, creates `%ProgramData%\wake-my-pc\` with ACLs locked to SYSTEM + Administrators, and registers the SCM service auto-starting as LocalSystem. Uninstall best-effort-broadcasts a Revoke to every paired phone before the keystore wipe (per Principle 1's layered revocation).
+
+WiX source lives at `daemon/wix/main.wxs`; the locked decisions baked into it are documented in the file header.
+
 ## Tests + lints
 
 ```

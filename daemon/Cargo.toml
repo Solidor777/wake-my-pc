@@ -73,7 +73,13 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_Security_Cryptography",
+    "Win32_System_Console",
+    "Win32_Networking_WindowsWebServices",
 ] }
+# SCM service entry points (service_main, dispatcher, control handler).
+# Pulls a small subset of windows-rs internally; we wrap it with our own
+# safe shim in `daemon::service`.
+windows-service = "0.8"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util", "macros", "rt-multi-thread"] }
@@ -86,3 +92,17 @@ path = "src/lib.rs"
 [[bin]]
 name = "wake-my-pc-daemon"
 path = "src/main.rs"
+
+# cargo-wix MSI metadata. Build with:
+#   cargo install cargo-wix
+#   cargo wix --package wake-my-pc-daemon -p wake-my-pc-daemon
+# Requires the WiX 3.x SDK (`candle.exe` + `light.exe`) on PATH. CI
+# runs this on the pre-release workflow only — per-PR doesn't need it.
+[package.metadata.wix]
+# Pull in the WixUtilExtension for `util:PermissionEx` (the data-dir ACL).
+include = ["wix/main.wxs"]
+# These flags get appended to the `light.exe` invocation cargo-wix runs.
+# `-ext WixUtilExtension` registers the extension that provides
+# util:PermissionEx; without it, the .wxs fails to compile.
+compiler-args = ["-ext", "WixUtilExtension"]
+linker-args = ["-ext", "WixUtilExtension"]
